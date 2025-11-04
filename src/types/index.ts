@@ -19,12 +19,19 @@ export interface Order {
   customerId: string;
   customerName: string;
   customerEmail: string;
+  customerPhone?: string;
   items: CartItem[];
   totalAmount: number;
   shippingAddress: Address;
   status: 'pending' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled';
+  paymentStatus?: 'pending' | 'paid' | 'failed';
+  barcode?: string;
+  trackingNumber?: string;
+  deliveryConfirmed?: boolean;
+  deliveryConfirmedAt?: string;
   createdAt: string;
   updatedAt?: string;
+  estimatedDelivery?: string;
 }
 
 export interface Address {

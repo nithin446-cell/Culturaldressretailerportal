@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
-import { Package, ShoppingCart, DollarSign, TrendingUp, Users } from 'lucide-react';
+import { Button } from './ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { Package, ShoppingCart, DollarSign, TrendingUp, Users, Calendar } from 'lucide-react';
 import { BarChart, Bar, PieChart, Pie, Cell, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import type { Product, Order } from '../types';
 import { getRetailerProducts, getOrders } from '../utils/api';
@@ -9,12 +11,15 @@ interface RetailerDashboardProps {
   sessionToken: string;
 }
 
+type TimeFilter = 'daily' | 'weekly' | 'monthly';
+
 const COLORS = ['#f97316', '#ec4899', '#8b5cf6', '#14b8a6', '#f59e0b', '#ef4444'];
 
 export function RetailerDashboard({ sessionToken }: RetailerDashboardProps) {
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [timeFilter, setTimeFilter] = useState<TimeFilter>('monthly');
 
   useEffect(() => {
     loadData();
@@ -36,12 +41,37 @@ export function RetailerDashboard({ sessionToken }: RetailerDashboardProps) {
     }
   };
 
+  // Filter orders based on time period
+  const getFilteredOrders = () => {
+    const now = new Date();
+    const startDate = new Date();
+
+    switch (timeFilter) {
+      case 'daily':
+        startDate.setHours(0, 0, 0, 0);
+        break;
+      case 'weekly':
+        startDate.setDate(now.getDate() - 7);
+        break;
+      case 'monthly':
+        startDate.setMonth(now.getMonth() - 1);
+        break;
+    }
+
+    return orders.filter(order => {
+      const orderDate = new Date(order.createdAt);
+      return orderDate >= startDate && order.status !== 'cancelled';
+    });
+  };
+
+  const filteredOrders = getFilteredOrders();
+
   // Calculate sales by category
   const salesByCategory = () => {
     const categoryStats: { [key: string]: { sales: number; revenue: number; count: number } } = {};
     
-    orders.forEach(order => {
-      if (order.status !== 'cancelled') {
+    filteredOrders.forEach(order => {
+      if (order.paymentStatus === 'paid') {
         order.items.forEach(item => {
           if (!categoryStats[item.category]) {
             categoryStats[item.category] = { sales: 0, revenue: 0, count: 0 };
@@ -57,14 +87,45 @@ export function RetailerDashboard({ sessionToken }: RetailerDashboardProps) {
       category,
       sales: stats.sales,
       revenue: stats.revenue,
-      count: stats.count,
+      orders: stats.count,
     }));
   };
 
+  // Calculate revenue over time
+  const revenueOverTime = () => {
+    const revenueMap: { [key: string]: number } = {};
+    
+    filteredOrders.forEach(order => {
+      if (order.paymentStatus === 'paid') {
+        const date = new Date(order.createdAt);
+        let key: string;
+        
+        switch (timeFilter) {
+          case 'daily':
+            key = date.getHours() + ':00';
+            break;
+          case 'weekly':
+            key = date.toLocaleDateString('en-IN', { weekday: 'short' });
+            break;
+          case 'monthly':
+            key = date.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' });
+            break;
+        }
+        
+        revenueMap[key] = (revenueMap[key] || 0) + order.totalAmount;
+      }
+    });
+
+    return Object.entries(revenueMap)
+      .map(([date, revenue]) => ({ date, revenue }))
+      .slice(-15); // Show last 15 data points
+  };
+
   // Calculate order status distribution
-  const orderStatusData = () => {
+  const orderStatusDistribution = () => {
     const statusCount: { [key: string]: number } = {};
-    orders.forEach(order => {
+    
+    filteredOrders.forEach(order => {
       statusCount[order.status] = (statusCount[order.status] || 0) + 1;
     });
 
@@ -74,147 +135,146 @@ export function RetailerDashboard({ sessionToken }: RetailerDashboardProps) {
     }));
   };
 
-  // Calculate revenue over time (last 7 days)
-  const revenueOverTime = () => {
-    const last7Days = Array.from({ length: 7 }, (_, i) => {
-      const date = new Date();
-      date.setDate(date.getDate() - (6 - i));
-      return date.toISOString().split('T')[0];
-    });
-
-    const dailyRevenue = last7Days.map(date => {
-      const dayOrders = orders.filter(order => 
-        order.createdAt.split('T')[0] === date && order.status !== 'cancelled'
-      );
-      const revenue = dayOrders.reduce((sum, order) => sum + order.totalAmount, 0);
-      return {
-        date: new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        revenue,
-        orders: dayOrders.length,
-      };
-    });
-
-    return dailyRevenue;
-  };
-
-  const categoryData = salesByCategory();
-  const statusData = orderStatusData();
-  const revenueData = revenueOverTime();
-
-  // Calculate total stats
-  const totalRevenue = orders
-    .filter(o => o.status !== 'cancelled')
+  // Calculate key metrics
+  const totalRevenue = filteredOrders
+    .filter(o => o.paymentStatus === 'paid')
     .reduce((sum, order) => sum + order.totalAmount, 0);
   
-  const totalOrders = orders.length;
-  const totalProducts = products.length;
-  const totalStock = products.reduce((sum, p) => sum + p.stock, 0);
+  const totalOrders = filteredOrders.length;
+  
+  const paidOrders = filteredOrders.filter(o => o.paymentStatus === 'paid').length;
+  
+  const averageOrderValue = paidOrders > 0 ? totalRevenue / paidOrders : 0;
+  
+  const uniqueCustomers = new Set(filteredOrders.map(o => o.customerId)).size;
+
+  const categoryData = salesByCategory();
+  const revenueData = revenueOverTime();
+  const statusData = orderStatusDistribution();
+
+  const getTimeFilterLabel = () => {
+    switch (timeFilter) {
+      case 'daily': return 'Today';
+      case 'weekly': return 'Last 7 Days';
+      case 'monthly': return 'Last 30 Days';
+    }
+  };
 
   if (isLoading) {
     return (
-      <div className="text-center py-12">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-orange-600 mx-auto mb-4"></div>
-        <p className="text-gray-600">Loading dashboard...</p>
+      <div className="flex items-center justify-center py-12">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-orange-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading dashboard...</p>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h2 className="text-3xl mb-2">Dashboard</h2>
-        <p className="text-gray-600">Overview of your store performance</p>
+      {/* Header with Time Filter */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl">Dashboard Analytics</h2>
+          <p className="text-sm text-gray-600 mt-1">Overview of {getTimeFilterLabel()}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Calendar className="size-5 text-gray-500" />
+          <Select value={timeFilter} onValueChange={(value: TimeFilter) => setTimeFilter(value)}>
+            <SelectTrigger className="w-[180px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="daily">Daily (Today)</SelectItem>
+              <SelectItem value="weekly">Weekly (7 Days)</SelectItem>
+              <SelectItem value="monthly">Monthly (30 Days)</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button variant="outline" size="sm" onClick={loadData}>
+            Refresh
+          </Button>
+        </div>
       </div>
 
-      {/* Stats Cards */}
+      {/* Key Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm">Total Revenue</CardTitle>
-            <DollarSign className="size-4 text-orange-600" />
+            <DollarSign className="size-4 text-green-600" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl">₹{totalRevenue.toLocaleString()}</div>
-            <p className="text-xs text-muted-foreground">From {totalOrders} orders</p>
+            <p className="text-xs text-gray-500 mt-1">{getTimeFilterLabel()}</p>
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm">Total Orders</CardTitle>
-            <ShoppingCart className="size-4 text-pink-600" />
+            <ShoppingCart className="size-4 text-blue-600" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl">{totalOrders}</div>
-            <p className="text-xs text-muted-foreground">
-              {orders.filter(o => o.status === 'pending').length} pending
-            </p>
+            <p className="text-xs text-gray-500 mt-1">{paidOrders} paid orders</p>
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm">Total Products</CardTitle>
-            <Package className="size-4 text-purple-600" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl">{totalProducts}</div>
-            <p className="text-xs text-muted-foreground">{totalStock} items in stock</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm">Avg Order Value</CardTitle>
-            <TrendingUp className="size-4 text-green-600" />
+            <TrendingUp className="size-4 text-purple-600" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl">
-              ₹{totalOrders > 0 ? Math.round(totalRevenue / totalOrders).toLocaleString() : 0}
-            </div>
-            <p className="text-xs text-muted-foreground">Per order</p>
+            <div className="text-2xl">₹{Math.round(averageOrderValue).toLocaleString()}</div>
+            <p className="text-xs text-gray-500 mt-1">Per paid order</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm">Customers</CardTitle>
+            <Users className="size-4 text-orange-600" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl">{uniqueCustomers}</div>
+            <p className="text-xs text-gray-500 mt-1">Unique customers</p>
           </CardContent>
         </Card>
       </div>
 
-      {/* Charts */}
+      {/* Charts Row 1 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Sales by Category Bar Chart */}
+        {/* Revenue Over Time */}
         <Card>
           <CardHeader>
-            <CardTitle>Sales by Category</CardTitle>
+            <CardTitle>Revenue Trend</CardTitle>
           </CardHeader>
           <CardContent>
-            {categoryData.length > 0 ? (
+            {revenueData.length > 0 ? (
               <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={categoryData}>
+                <LineChart data={revenueData}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis 
-                    dataKey="category" 
-                    angle={-45}
-                    textAnchor="end"
-                    height={100}
-                    interval={0}
-                  />
+                  <XAxis dataKey="date" />
                   <YAxis />
-                  <Tooltip />
+                  <Tooltip formatter={(value) => `₹${value}`} />
                   <Legend />
-                  <Bar dataKey="sales" fill="#f97316" name="Units Sold" />
-                </BarChart>
+                  <Line type="monotone" dataKey="revenue" stroke="#f97316" strokeWidth={2} name="Revenue (₹)" />
+                </LineChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-[300px] flex items-center justify-center text-gray-500">
-                No sales data available
+              <div className="h-[300px] flex items-center justify-center text-gray-400">
+                No revenue data for this period
               </div>
             )}
           </CardContent>
         </Card>
 
-        {/* Order Status Pie Chart */}
+        {/* Order Status Distribution */}
         <Card>
           <CardHeader>
-            <CardTitle>Order Status Distribution</CardTitle>
+            <CardTitle>Order Status</CardTitle>
           </CardHeader>
           <CardContent>
             {statusData.length > 0 ? (
@@ -225,7 +285,7 @@ export function RetailerDashboard({ sessionToken }: RetailerDashboardProps) {
                     cx="50%"
                     cy="50%"
                     labelLine={false}
-                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                    label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
                     outerRadius={80}
                     fill="#8884d8"
                     dataKey="value"
@@ -238,103 +298,77 @@ export function RetailerDashboard({ sessionToken }: RetailerDashboardProps) {
                 </PieChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-[300px] flex items-center justify-center text-gray-500">
-                No orders yet
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Revenue Over Time Line Chart */}
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle>Revenue Trend (Last 7 Days)</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {revenueData.some(d => d.revenue > 0) ? (
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={revenueData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" />
-                  <YAxis yAxisId="left" />
-                  <YAxis yAxisId="right" orientation="right" />
-                  <Tooltip />
-                  <Legend />
-                  <Line 
-                    yAxisId="left"
-                    type="monotone" 
-                    dataKey="revenue" 
-                    stroke="#f97316" 
-                    strokeWidth={2}
-                    name="Revenue (₹)"
-                  />
-                  <Line 
-                    yAxisId="right"
-                    type="monotone" 
-                    dataKey="orders" 
-                    stroke="#8b5cf6" 
-                    strokeWidth={2}
-                    name="Orders"
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="h-[300px] flex items-center justify-center text-gray-500">
-                No revenue data available
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Category Revenue Table */}
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle>Category Performance</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {categoryData.length > 0 ? (
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b">
-                      <th className="text-left p-2">Category</th>
-                      <th className="text-right p-2">Units Sold</th>
-                      <th className="text-right p-2">Revenue</th>
-                      <th className="text-right p-2">Avg Price</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {categoryData
-                      .sort((a, b) => b.revenue - a.revenue)
-                      .map((cat, index) => (
-                        <tr key={cat.category} className="border-b">
-                          <td className="p-2">
-                            <div className="flex items-center gap-2">
-                              <div 
-                                className="w-3 h-3 rounded-full"
-                                style={{ backgroundColor: COLORS[index % COLORS.length] }}
-                              />
-                              {cat.category}
-                            </div>
-                          </td>
-                          <td className="text-right p-2">{cat.sales}</td>
-                          <td className="text-right p-2">₹{cat.revenue.toLocaleString()}</td>
-                          <td className="text-right p-2">
-                            ₹{Math.round(cat.revenue / cat.sales).toLocaleString()}
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="text-center py-8 text-gray-500">
-                No category data available
+              <div className="h-[300px] flex items-center justify-center text-gray-400">
+                No orders for this period
               </div>
             )}
           </CardContent>
         </Card>
       </div>
+
+      {/* Sales by Category */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Sales by Category</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {categoryData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={400}>
+              <BarChart data={categoryData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="category" />
+                <YAxis yAxisId="left" orientation="left" stroke="#8884d8" />
+                <YAxis yAxisId="right" orientation="right" stroke="#82ca9d" />
+                <Tooltip />
+                <Legend />
+                <Bar yAxisId="left" dataKey="sales" fill="#f97316" name="Units Sold" />
+                <Bar yAxisId="right" dataKey="revenue" fill="#ec4899" name="Revenue (₹)" />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="h-[400px] flex items-center justify-center text-gray-400">
+              No sales data for this period
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Product Inventory Status */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Package className="size-5" />
+            Product Inventory
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-2">
+            {products.length > 0 ? (
+              <>
+                <div className="grid grid-cols-3 gap-4 mb-4">
+                  <div className="text-center p-4 bg-green-50 rounded-lg">
+                    <p className="text-2xl">{products.filter(p => p.stock > 10).length}</p>
+                    <p className="text-sm text-gray-600">In Stock</p>
+                  </div>
+                  <div className="text-center p-4 bg-yellow-50 rounded-lg">
+                    <p className="text-2xl">{products.filter(p => p.stock > 0 && p.stock <= 10).length}</p>
+                    <p className="text-sm text-gray-600">Low Stock</p>
+                  </div>
+                  <div className="text-center p-4 bg-red-50 rounded-lg">
+                    <p className="text-2xl">{products.filter(p => p.stock === 0).length}</p>
+                    <p className="text-sm text-gray-600">Out of Stock</p>
+                  </div>
+                </div>
+                <div className="text-sm text-gray-600">
+                  Total Products: {products.length}
+                </div>
+              </>
+            ) : (
+              <p className="text-gray-400 text-center py-8">No products added yet</p>
+            )}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

@@ -237,10 +237,18 @@ export async function createPayment(token: string, amount: number, orderId: stri
     body: JSON.stringify({ amount, orderId }),
   });
   
-  const data = await response.json();
   if (!response.ok) {
-    throw new Error(data.error || 'Failed to create payment');
+    let errorMessage = 'Failed to create payment';
+    try {
+      const data = await response.json();
+      errorMessage = data.error || errorMessage;
+    } catch (e) {
+      errorMessage = `${response.statusText} (${response.status})`;
+    }
+    throw new Error(errorMessage);
   }
+  
+  const data = await response.json();
   return data;
 }
 
@@ -251,9 +259,106 @@ export async function verifyPayment(transactionId: string, status: 'success' | '
     body: JSON.stringify({ transactionId, status }),
   });
   
-  const data = await response.json();
   if (!response.ok) {
-    throw new Error(data.error || 'Failed to verify payment');
+    let errorMessage = 'Failed to verify payment';
+    try {
+      const data = await response.json();
+      errorMessage = data.error || errorMessage;
+    } catch (e) {
+      errorMessage = `${response.statusText} (${response.status})`;
+    }
+    throw new Error(errorMessage);
   }
-  return data.payment;
+  
+  const data = await response.json();
+  return data;
+}
+
+// Track order by barcode, tracking number, or order ID
+export async function trackOrder(identifier: string) {
+  const response = await fetch(`${BASE_URL}/track/${identifier}`, {
+    headers: getAuthHeader(),
+  });
+  
+  if (!response.ok) {
+    let errorMessage = 'Failed to track order';
+    try {
+      const data = await response.json();
+      errorMessage = data.error || errorMessage;
+    } catch (e) {
+      errorMessage = `${response.statusText} (${response.status})`;
+    }
+    throw new Error(errorMessage);
+  }
+  
+  const data = await response.json();
+  return data.order;
+}
+
+// Confirm delivery (customer only)
+export async function confirmDelivery(token: string, orderId: string, confirmed: boolean) {
+  const response = await fetch(`${BASE_URL}/orders/${orderId}/confirm-delivery`, {
+    method: 'POST',
+    headers: getAuthHeader(token),
+    body: JSON.stringify({ confirmed }),
+  });
+  
+  if (!response.ok) {
+    let errorMessage = 'Failed to confirm delivery';
+    try {
+      const data = await response.json();
+      errorMessage = data.error || errorMessage;
+    } catch (e) {
+      // If response is not JSON, use status text
+      errorMessage = `${response.statusText} (${response.status})`;
+    }
+    throw new Error(errorMessage);
+  }
+  
+  const data = await response.json();
+  return data.order;
+}
+
+// Migrate orders to add barcodes (retailer only)
+export async function migrateOrders(sessionToken: string) {
+  const response = await fetch(`${BASE_URL}/migrate-orders`, {
+    method: 'POST',
+    headers: getAuthHeader(publicAnonKey, sessionToken),
+  });
+  
+  if (!response.ok) {
+    let errorMessage = 'Failed to migrate orders';
+    try {
+      const data = await response.json();
+      errorMessage = data.error || errorMessage;
+    } catch (e) {
+      errorMessage = `${response.statusText} (${response.status})`;
+    }
+    throw new Error(errorMessage);
+  }
+  
+  const data = await response.json();
+  return data;
+}
+
+// Regenerate barcode for a specific order (retailer only)
+export async function regenerateBarcode(sessionToken: string, orderId: string) {
+  const response = await fetch(`${BASE_URL}/orders/${orderId}/regenerate-barcode`, {
+    method: 'POST',
+    headers: getAuthHeader(publicAnonKey, sessionToken),
+  });
+  
+  if (!response.ok) {
+    let errorMessage = 'Failed to regenerate barcode';
+    try {
+      const data = await response.json();
+      errorMessage = data.error || errorMessage;
+    } catch (e) {
+      errorMessage = `${response.statusText} (${response.status})`;
+    }
+    throw new Error(errorMessage);
+  }
+  
+  const data = await response.json();
+  return data.order;
 }

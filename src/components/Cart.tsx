@@ -74,7 +74,7 @@ export function Cart({ items, onUpdateQuantity, onRemoveItem, onClose, accessTok
   };
 
   const handlePaymentSuccess = () => {
-    toast.success('Order placed successfully!');
+    toast.success('🎉 Order placed successfully! Check "My Orders" to track delivery.');
     items.forEach(item => onRemoveItem(item.id));
     onClose();
   };

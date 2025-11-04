@@ -383,14 +383,34 @@ app.post('/make-server-08d26c19/orders', async (c) => {
     const orderData = await c.req.json();
     const orderId = `order:${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
+    // Generate barcode and tracking number
+    const timestamp = Date.now().toString(36).toUpperCase();
+    const random = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const orderPart = orderId.split('_')[1]?.substring(0, 4).toUpperCase() || random;
+    const barcode = `VST${timestamp}${orderPart}${random}`;
+    
+    const trackingPrefix = 'VAST';
+    const trackingTimestamp = Date.now().toString().slice(-8);
+    const trackingRandom = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+    const trackingNumber = `${trackingPrefix}${trackingTimestamp}${trackingRandom}`;
+    
+    // Calculate estimated delivery (5-7 days)
+    const estimatedDelivery = new Date();
+    estimatedDelivery.setDate(estimatedDelivery.getDate() + (Math.floor(Math.random() * 3) + 5));
+    
     const order = {
       id: orderId,
       ...orderData,
       customerId: user.id,
-      customerName: user.user_metadata?.name,
+      customerName: user.user_metadata?.name || 'Customer',
       customerEmail: user.email,
       customerPhone: user.phone,
       status: 'pending',
+      paymentStatus: 'pending',
+      barcode,
+      trackingNumber,
+      estimatedDelivery: estimatedDelivery.toISOString(),
+      deliveryConfirmed: false,
       createdAt: new Date().toISOString(),
     };
 
@@ -520,20 +540,191 @@ app.post('/make-server-08d26c19/verify-payment', async (c) => {
     
     await kv.set(`payment:${transactionId}`, payment);
     
-    // Update order status if payment successful
-    if (status === 'success') {
-      const order = await kv.get(payment.orderId);
-      if (order) {
+    const order = await kv.get(payment.orderId);
+    if (order) {
+      if (status === 'success') {
+        // Payment successful - confirm order
         order.paymentStatus = 'paid';
         order.status = 'confirmed';
+        order.updatedAt = new Date().toISOString();
+        await kv.set(payment.orderId, order);
+      } else {
+        // Payment failed - cancel order
+        order.paymentStatus = 'failed';
+        order.status = 'cancelled';
+        order.updatedAt = new Date().toISOString();
         await kv.set(payment.orderId, order);
       }
     }
 
-    return c.json({ payment });
+    return c.json({ payment, order });
   } catch (error) {
     console.log(`Error verifying payment: ${error}`);
     return c.json({ error: 'Failed to verify payment' }, 500);
+  }
+});
+
+// Track order by barcode or tracking number
+app.get('/make-server-08d26c19/track/:identifier', async (c) => {
+  try {
+    const identifier = c.req.param('identifier');
+    const allOrders = await kv.getByPrefix('order:');
+    
+    // Search by barcode or tracking number
+    const order = allOrders.find(o => 
+      o.barcode === identifier || 
+      o.trackingNumber === identifier ||
+      o.id === identifier
+    );
+    
+    if (!order) {
+      return c.json({ error: 'Order not found' }, 404);
+    }
+    
+    return c.json({ order });
+  } catch (error) {
+    console.log(`Error tracking order: ${error}`);
+    return c.json({ error: 'Failed to track order' }, 500);
+  }
+});
+
+// Migrate old orders to add barcodes (retailer only)
+app.post('/make-server-08d26c19/migrate-orders', async (c) => {
+  try {
+    const sessionToken = c.req.header('X-Session-Token');
+    if (!sessionToken) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    const session = await kv.get(`session:${sessionToken}`);
+    if (!session || session.userType !== 'retailer') {
+      return c.json({ error: 'Only retailers can migrate orders' }, 403);
+    }
+
+    const allOrders = await kv.getByPrefix('order:');
+    let migratedCount = 0;
+
+    for (const order of allOrders) {
+      if (!order.barcode || !order.trackingNumber) {
+        // Generate barcode
+        const timestamp = Date.now().toString(36).toUpperCase();
+        const random = Math.random().toString(36).substring(2, 6).toUpperCase();
+        const orderPart = order.id.split('_')[1]?.substring(0, 4).toUpperCase() || random;
+        order.barcode = `VST${timestamp}${orderPart}${random}`;
+        
+        // Generate tracking number
+        const trackingPrefix = 'VAST';
+        const trackingTimestamp = Date.now().toString().slice(-8);
+        const trackingRandom = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+        order.trackingNumber = `${trackingPrefix}${trackingTimestamp}${trackingRandom}`;
+        
+        // Set payment status if missing
+        if (!order.paymentStatus) {
+          order.paymentStatus = order.status === 'cancelled' ? 'failed' : 'paid';
+        }
+        
+        // Set estimated delivery if missing
+        if (!order.estimatedDelivery) {
+          const estimatedDate = new Date(order.createdAt);
+          estimatedDate.setDate(estimatedDate.getDate() + 7);
+          order.estimatedDelivery = estimatedDate.toISOString();
+        }
+        
+        await kv.set(order.id, order);
+        migratedCount++;
+      }
+    }
+
+    return c.json({ 
+      message: `Successfully migrated ${migratedCount} orders`,
+      migratedCount,
+      totalOrders: allOrders.length,
+    });
+  } catch (error) {
+    console.log(`Error migrating orders: ${error}`);
+    return c.json({ error: 'Failed to migrate orders' }, 500);
+  }
+});
+
+// Regenerate barcode for a specific order (retailer only)
+app.post('/make-server-08d26c19/orders/:id/regenerate-barcode', async (c) => {
+  try {
+    const sessionToken = c.req.header('X-Session-Token');
+    if (!sessionToken) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    const session = await kv.get(`session:${sessionToken}`);
+    if (!session || session.userType !== 'retailer') {
+      return c.json({ error: 'Only retailers can regenerate barcodes' }, 403);
+    }
+
+    const orderId = c.req.param('id');
+    const order = await kv.get(orderId);
+    
+    if (!order) {
+      return c.json({ error: 'Order not found' }, 404);
+    }
+
+    // Generate new barcode
+    const timestamp = Date.now().toString(36).toUpperCase();
+    const random = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const orderPart = orderId.split('_')[1]?.substring(0, 4).toUpperCase() || random;
+    order.barcode = `VST${timestamp}${orderPart}${random}`;
+    
+    // Generate new tracking number
+    const trackingPrefix = 'VAST';
+    const trackingTimestamp = Date.now().toString().slice(-8);
+    const trackingRandom = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+    order.trackingNumber = `${trackingPrefix}${trackingTimestamp}${trackingRandom}`;
+    
+    order.updatedAt = new Date().toISOString();
+    order.barcodeRegeneratedAt = new Date().toISOString();
+    
+    await kv.set(orderId, order);
+    
+    return c.json({ 
+      order,
+      message: 'Barcode regenerated successfully',
+    });
+  } catch (error) {
+    console.log(`Error regenerating barcode: ${error}`);
+    return c.json({ error: 'Failed to regenerate barcode' }, 500);
+  }
+});
+
+// Confirm delivery (customer only)
+app.post('/make-server-08d26c19/orders/:id/confirm-delivery', async (c) => {
+  try {
+    const user = await verifyUser(c.req.raw);
+    if (!user) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    const orderId = c.req.param('id');
+    const { confirmed } = await c.req.json();
+    
+    const order = await kv.get(orderId);
+    if (!order) {
+      return c.json({ error: 'Order not found' }, 404);
+    }
+    
+    if (order.customerId !== user.id) {
+      return c.json({ error: 'Unauthorized' }, 403);
+    }
+    
+    order.deliveryConfirmed = confirmed;
+    if (confirmed) {
+      order.deliveryConfirmedAt = new Date().toISOString();
+      order.status = 'delivered';
+    }
+    order.updatedAt = new Date().toISOString();
+    
+    await kv.set(orderId, order);
+    return c.json({ order });
+  } catch (error) {
+    console.log(`Error confirming delivery: ${error}`);
+    return c.json({ error: 'Failed to confirm delivery' }, 500);
   }
 });
 

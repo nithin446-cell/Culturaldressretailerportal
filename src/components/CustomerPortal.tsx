@@ -219,7 +219,7 @@ export function CustomerPortal({ accessToken, profile, onLogout }: CustomerPorta
         )}
 
         {activeTab === 'orders' && (
-          <OrderTracking accessToken={accessToken} />
+          <OrderTracking accessToken={accessToken} userId={profile.userId} />
         )}
 
         {activeTab === 'profile' && (
